@@ -7,9 +7,7 @@
 
 local Players = game:GetService("Players")
 local PathfindingService = game:GetService("PathfindingService")
-local RunService = game:GetService("RunService")
 local LocalPlayer = Players.LocalPlayer
-local TweenService = game:GetService("TweenService")
 
 --// 1. GUI SETUP (Xeno Safe) //--
 local ScreenGui = Instance.new("ScreenGui")
@@ -25,7 +23,7 @@ end
 
 local MainFrame = Instance.new("Frame")
 MainFrame.Name = "MainFrame"
-MainFrame.Size = UDim2.new(0, 200, 0, 110)
+MainFrame.Size = UDim2.new(0, 260, 0, 220)
 MainFrame.Position = UDim2.new(0.1, 0, 0.1, 0) -- Top Left
 MainFrame.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
 MainFrame.BorderSizePixel = 0
@@ -34,12 +32,12 @@ MainFrame.Draggable = true -- Built-in Draggable for simplicity
 MainFrame.Parent = ScreenGui
 
 local Title = Instance.new("TextLabel")
-Title.Text = "AI FOLLOWER"
-Title.Size = UDim2.new(1, 0, 0, 20)
+Title.Text = "AI FOLLOWER HUB"
+Title.Size = UDim2.new(1, 0, 0, 26)
 Title.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
 Title.TextColor3 = Color3.fromRGB(255, 255, 255)
 Title.Font = Enum.Font.SourceSansBold
-Title.TextSize = 14
+Title.TextSize = 16
 Title.Parent = MainFrame
 
 local NameInput = Instance.new("TextBox")
@@ -53,8 +51,8 @@ NameInput.Parent = MainFrame
 
 local StatusLabel = Instance.new("TextLabel")
 StatusLabel.Text = "Status: Idle"
-StatusLabel.Size = UDim2.new(1, 0, 0, 15)
-StatusLabel.Position = UDim2.new(0, 0, 0.5, 0)
+StatusLabel.Size = UDim2.new(1, 0, 0, 18)
+StatusLabel.Position = UDim2.new(0, 0, 0.52, 0)
 StatusLabel.BackgroundTransparency = 1
 StatusLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
 StatusLabel.TextSize = 12
@@ -78,9 +76,38 @@ StopBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 StopBtn.Font = Enum.Font.SourceSansBold
 StopBtn.Parent = MainFrame
 
+local PlayersLabel = Instance.new("TextLabel")
+PlayersLabel.Text = "Players in server"
+PlayersLabel.Size = UDim2.new(1, 0, 0, 16)
+PlayersLabel.Position = UDim2.new(0, 0, 0.55, 0)
+PlayersLabel.BackgroundTransparency = 1
+PlayersLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+PlayersLabel.TextSize = 12
+PlayersLabel.Parent = MainFrame
+
+local PlayerList = Instance.new("ScrollingFrame")
+PlayerList.Name = "PlayerList"
+PlayerList.Size = UDim2.new(0.9, 0, 0, 60)
+PlayerList.Position = UDim2.new(0.05, 0, 0.58, 0)
+PlayerList.CanvasSize = UDim2.new(0, 0, 0, 0)
+PlayerList.ScrollBarThickness = 4
+PlayerList.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+PlayerList.BorderSizePixel = 0
+PlayerList.Parent = MainFrame
+
+local PlayerListLayout = Instance.new("UIListLayout")
+PlayerListLayout.Padding = UDim.new(0, 4)
+PlayerListLayout.FillDirection = Enum.FillDirection.Vertical
+PlayerListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+PlayerListLayout.Parent = PlayerList
+PlayerListLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+    PlayerList.CanvasSize = UDim2.new(0, 0, 0, PlayerListLayout.AbsoluteContentSize.Y)
+end)
+
 --// 2. LOGIC //--
 local Following = false
 local CurrentTarget = nil
+local LastTargetPosition = nil
 
 local function GetPlayer(String)
     if not String or String == "" then return nil end
@@ -105,56 +132,116 @@ local function MoveTo(Position)
     end
 end
 
+local function refreshPlayerList()
+    for _, child in ipairs(PlayerList:GetChildren()) do
+        if child:IsA("TextButton") then
+            child:Destroy()
+        end
+    end
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer then
+            local button = Instance.new("TextButton")
+            button.Size = UDim2.new(1, 0, 0, 22)
+            button.Text = player.DisplayName .. " (@" .. player.Name .. ")"
+            button.TextSize = 12
+            button.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+            button.TextColor3 = Color3.fromRGB(255, 255, 255)
+            button.BorderSizePixel = 0
+            button.Parent = PlayerList
+
+            button.MouseButton1Click:Connect(function()
+                NameInput.Text = player.Name
+                StatusLabel.Text = "Selected: " .. player.DisplayName
+            end)
+        end
+    end
+
+    PlayerList.CanvasSize = UDim2.new(0, 0, 0, PlayerListLayout.AbsoluteContentSize.Y)
+end
+
+local function computePath(startPos, goalPos)
+    local humanoid = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid")
+    local path = PathfindingService:CreatePath({
+        AgentRadius = 2,
+        AgentHeight = 5,
+        AgentCanJump = true,
+        AgentJumpHeight = humanoid and humanoid.JumpHeight or 7.2,
+        AgentMaxSlope = humanoid and humanoid.MaxSlopeAngle or 45,
+    })
+
+    local ok = pcall(function()
+        path:ComputeAsync(startPos, goalPos)
+    end)
+
+    if not ok or path.Status ~= Enum.PathStatus.Success then
+        return nil
+    end
+
+    return path
+end
+
+local function followWaypoints(path, myChar)
+    local humanoid = myChar:FindFirstChild("Humanoid")
+    local targetChar = CurrentTarget and CurrentTarget.Character
+    if not humanoid or not targetChar then return false end
+
+    local interrupted = false
+    local connection
+    connection = path.Blocked:Connect(function()
+        interrupted = true
+        LastTargetPosition = nil
+    end)
+
+    local waypoints = path:GetWaypoints()
+    for i, waypoint in ipairs(waypoints) do
+        if not Following or not CurrentTarget or interrupted then break end
+        if i == 1 then continue end
+
+        if waypoint.Action == Enum.PathWaypointAction.Jump then
+            humanoid.Jump = true
+        end
+
+        humanoid:MoveTo(waypoint.Position)
+
+        local finished = humanoid.MoveToFinished:Wait()
+        if not finished then
+            interrupted = true
+            break
+        end
+    end
+
+    if connection then connection:Disconnect() end
+    return interrupted
+end
+
 local function FollowLogic()
     while Following and CurrentTarget do
         local MyChar = LocalPlayer.Character
         local TargetChar = CurrentTarget.Character
-        
+
         if MyChar and TargetChar and MyChar:FindFirstChild("HumanoidRootPart") and TargetChar:FindFirstChild("HumanoidRootPart") then
             local MyRoot = MyChar.HumanoidRootPart
             local TargetRoot = TargetChar.HumanoidRootPart
             local Dist = (MyRoot.Position - TargetRoot.Position).Magnitude
 
-            if Dist > 5 then -- Only move if further than 5 studs
+            if Dist > 4 then -- Only move if further than 4 studs
                 StatusLabel.Text = "Computing Path..."
-                
-                local Path = PathfindingService:CreatePath({
-                    AgentRadius = 2,
-                    AgentCanJump = true
-                })
-                
-                local success, errorMessage = pcall(function()
-                    Path:ComputeAsync(MyRoot.Position, TargetRoot.Position)
-                end)
+                local shouldRecompute = not LastTargetPosition or (TargetRoot.Position - LastTargetPosition).Magnitude > 5
+                LastTargetPosition = TargetRoot.Position
 
-                if success and Path.Status == Enum.PathStatus.Success then
-                    local Waypoints = Path:GetWaypoints()
-                    StatusLabel.Text = "Moving..."
-                    
-                    -- Move to first few waypoints
-                    for i, Waypoint in pairs(Waypoints) do
-                        if not Following then break end
-                        if i == 1 then continue end -- Skip current position
-                        
-                        -- Jump if needed
-                        if Waypoint.Action == Enum.PathWaypointAction.Jump then
-                            MyChar.Humanoid.Jump = true
+                if shouldRecompute then
+                    local path = computePath(MyRoot.Position, TargetRoot.Position)
+                    if path then
+                        StatusLabel.Text = "Moving..."
+                        local interrupted = followWaypoints(path, MyChar)
+                        if interrupted then
+                            StatusLabel.Text = "Path blocked, recalculating..."
                         end
-                        
-                        MyChar.Humanoid:MoveTo(Waypoint.Position)
-                        
-                        -- Check if target moved too far while we were walking
-                        if (TargetRoot.Position - Waypoints[#Waypoints].Position).Magnitude > 15 then
-                            -- Recompute path immediately
-                            break
-                        end
-                        
-                        local MoveFinished = MyChar.Humanoid.MoveToFinished:Wait()
+                    else
+                        StatusLabel.Text = "Path failed, direct move"
+                        MyChar.Humanoid:MoveTo(TargetRoot.Position)
                     end
-                else
-                    -- Fallback: Direct movement (if pathfinding fails)
-                    StatusLabel.Text = "Path blocked, direct move..."
-                    MyChar.Humanoid:MoveTo(TargetRoot.Position)
                 end
             else
                 StatusLabel.Text = "Near Target"
@@ -163,7 +250,7 @@ local function FollowLogic()
         else
             StatusLabel.Text = "Target/Character Missing"
         end
-        task.wait(0.1)
+        task.wait(0.25)
     end
 end
 
@@ -178,6 +265,7 @@ StartBtn.MouseButton1Click:Connect(function()
     if Plr then
         CurrentTarget = Plr
         Following = true
+        LastTargetPosition = nil
         StatusLabel.Text = "Locked: " .. Plr.DisplayName
         task.spawn(FollowLogic)
     else
@@ -193,3 +281,7 @@ StopBtn.MouseButton1Click:Connect(function()
         LocalPlayer.Character.Humanoid:MoveTo(LocalPlayer.Character.HumanoidRootPart.Position)
     end
 end)
+
+refreshPlayerList()
+Players.PlayerAdded:Connect(refreshPlayerList)
+Players.PlayerRemoving:Connect(refreshPlayerList)
